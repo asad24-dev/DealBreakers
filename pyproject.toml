@@ -1,0 +1,21 @@
+[project]
+name = "dealbreakers"
+version = "0.1.0"
+description = "Seller agent for Listo Deal Room."
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27.0",
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.4.0",
+  "python-dotenv>=1.0.1",
+  "rich>=13.7.1",
+  "langchain>=0.2.14",
+  "langchain-openai>=0.1.22",
+]
+
+[project.scripts]
+dealbreakers = "dealbreakers.cli:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
