@@ -1,19 +1,24 @@
 \documentclass[10pt,a4paper]{article}
 
-\usepackage[margin=1.6cm]{geometry}
+\usepackage[margin=1.55cm]{geometry}
 \usepackage{enumitem}
 \usepackage{titlesec}
 \usepackage{hyperref}
 \usepackage{xcolor}
 \usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, backgrounds, fit, positioning, shapes.geometric}
 
 \definecolor{accent}{HTML}{1A365D}
 
 \pagestyle{empty}
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{4pt}
-\titlespacing*{\section}{0pt}{6pt}{3pt}
-\titlespacing*{\subsection}{0pt}{4pt}{2pt}
+\titlespacing*{\section}{0pt}{7pt}{3pt}
+\titlespacing*{\subsection}{0pt}{5pt}{2pt}
+\setlist[itemize]{leftmargin=*, nosep, topsep=2pt}
+\setlist[enumerate]{leftmargin=*, nosep, topsep=2pt}
 
 \titleformat{\section}{\large\bfseries\color{accent}}{}{0em}{}
 \titleformat{\subsection}{\normalsize\bfseries\color{accent}}{}{0em}{}
@@ -22,7 +27,7 @@
 
 \begin{center}
   {\LARGE\bfseries\color{accent} DealBreakers}\\[4pt]
-  {\large Listo Deal Room --- Autonomous Travel Seller Agent}\\[6pt]
+  {\large Listo Deal Room --- Source-Grounded Agentic Travel Seller}\\[6pt]
   \textbf{Team members:}
   Muhammad Asad Majeed \textbullet{}
   Muhammad Maaz \textbullet{}
@@ -34,56 +39,110 @@
 \hrule
 \vspace{6pt}
 
-\section*{Problem}
-We compete in the \textbf{Listo Deal Room}: an AI buyer negotiates a real travel package over up to 15 rounds.
-Our agent must \emph{close the deal}, \emph{maximise margin}, and \emph{keep the buyer satisfied}.
-Scoring (100 pts): \textbf{Close} 50 (binary) \textbar{} \textbf{Margin} 30 \textbar{} \textbf{Satisfaction} 20.
-Margin is computed as $(q - c) / (B - c)$, where $q$ is quoted total, $c$ is verified MCP cost, and $B$ is the buyer's hidden budget ceiling---which we must infer from dialogue.
+\section*{Challenge and Objective}
+DealBreakers is an autonomous seller for the \textbf{Listo Deal Room} challenge. In each match an AI buyer arrives with a private persona, hidden budget ceiling, travel preferences, and willingness to walk away. The seller has at most 15 turns to discover the buyer's needs, source a real travel package from live MCP integrations, quote a marked-up offer, negotiate objections, and close.
 
-\section*{Approach: Multi-Agent Negotiation Loop}
-Each round runs a deterministic pipeline orchestrated by a central \texttt{SellerAgent}, with specialised LLM evaluators for judgment calls:
+The scoring objective is deliberately multi-objective: \textbf{Close} is worth 50 points, \textbf{margin} is worth 30 points, and \textbf{satisfaction} is worth 20 points. Margin is computed as $(q - c) / (B - c)$, where $q$ is the quoted total, $c$ is the verified live MCP cost, and $B$ is the buyer's hidden budget. This means the agent cannot simply undercut to close, nor can it overprice blindly. It must infer the buyer's ceiling from conversation, preserve trust, and know when a lower-margin close is better than a high-margin walk-away.
 
-\begin{enumerate}[leftmargin=*, nosep, topsep=2pt]
-  \item \textbf{Profile extraction} --- Regex baseline plus \emph{ProfileEvaluator} LLM extracts destination, product type (holiday / tour / city break), party size, must-have amenities, luxury/price sensitivity, and budget. An \emph{echo guard} discards budget figures that mirror our own quoted prices (prevents a downward spiral).
-  \item \textbf{Buyer read} --- \emph{ProfileEvaluator} scores mood, resistance, impatience, close signal, and main objection (price vs.\ fit).
-  \item \textbf{Live inventory search} --- \emph{McpSearchEngine} queries travel MCPs (TravelSupermarket, TourRadar, trivago, Kiwi, EconomyBookings), maps results to a canonical catalogue, and scores candidates on destination fit, star rating, budget, and amenity coverage.
-  \item \textbf{Shortlist selection} --- \emph{ShortlistEvaluator} picks the best qualifying listing; preference for cheapest cost base that satisfies all hard constraints (maximises margin headroom).
-  \item \textbf{Pricing strategy} --- \emph{PricingStrategist} sets \texttt{markupPct} using a hybrid of deterministic anchors and LLM advice informed by quote/reaction history. Inferred ceiling updated each round from rejections and warm signals.
-  \item \textbf{Message generation} --- \emph{MessageComposerLLM} drafts a 1--3 sentence pitch; \emph{MessageCritic} revises before send (tone match, no fabricated facts, confident amenity framing).
-  \item \textbf{Structured offer} --- Real MCP \texttt{priceTotal} and \texttt{deepLinkUrl} attached; markup applied without altering verified cost.
+\section*{Agentic Design Philosophy}
+Our core design decision was to build a \textbf{controlled agentic system}, not a single free-form chatbot. The top-level \texttt{SellerAgent} owns the negotiation state and round-by-round control flow. Around it are specialised evaluator agents that each perform one bounded reasoning task: extract the buyer profile, read the latest emotional/negotiation signal, choose among live listings, advise a markup, draft a message, and critique the draft before it is sent.
+
+This gives us the benefits of agentic reasoning without giving the language model unchecked authority over facts or prices. The LLM can judge nuance, tone, and trade-offs, but live inventory, verified cost, source URLs, offer structure, and hard guard rails remain deterministic Python code. Every outbound offer is built from a canonical \texttt{ListingCandidate}, validated by Pydantic models, and attached to source receipts before reaching the Deal Room API.
+
+
+\section*{End-to-End Round Loop}
+Each buyer message passes through the same pipeline:
+
+\begin{enumerate}
+  \item \textbf{State update.} The agent stores the transcript, latest buyer message, previous seller messages, quotes, price objections, current candidate, pivots, optional car add-on, and search key.
+  \item \textbf{Profile extraction.} A regex baseline in \texttt{profile.py} extracts obvious facts such as destination, party size, trip style, nights, budget, must-haves, luxury signals, and price sensitivity. The \texttt{ProfileEvaluator} then performs a structured LLM extraction over the transcript and merges only typed fields into the profile.
+  \item \textbf{Echo guard.} If the extracted budget resembles one of our own previous quotes or discount deltas, it is discarded. This prevents the LLM from mistaking "that price is too high" or a repeated seller total for the buyer's true budget ceiling.
+  \item \textbf{Buyer read.} The same evaluator reads the latest message for mood, tone, price resistance, overcharge suspicion, impatience, close signal, and main objection. These values decide whether to ask another question, hold firm, concede, or pivot.
+  \item \textbf{Search decision.} The controller searches only when the profile has enough signal or when a fit objection means the current product is wrong. It caches a search key so the agent does not repeatedly re-source for unchanged requirements.
+  \item \textbf{Live MCP search.} \texttt{McpSearchEngine} ranks travel MCPs by trip type, discovers relevant tools, fills arguments only from known profile facts, and retries with broader arguments if the first pass returns nothing.
+  \item \textbf{Candidate normalisation.} \texttt{catalog.py} converts heterogeneous MCP responses into canonical candidates with source, product type, name, URL, total price, location, nights, board basis, star rating, review score, operator, and amenities.
+  \item \textbf{Shortlist selection.} A deterministic scorer ranks candidates for product type, destination, budget headroom, amenities, quality, and luxury fit. The \texttt{ShortlistEvaluator} can then choose the best item from the shortlist, with guard rails that avoid overly expensive bases when the budget is unknown.
+  \item \textbf{Pricing.} \texttt{PricingStrategist} combines deterministic opening anchors, quote history, buyer read, remaining rounds, known budget, and LLM pricing advice. A markup ladder enforces never quoting higher after a quote, visible concessions on real price pushback, firm holds when the buyer is close, and endgame close-first pricing.
+  \item \textbf{Offer construction.} The structured offer is built from verified MCP cost plus markup. If a car is required, EconomyBookings or TravelSupermarket car hire is added as a separate source-backed component.
+  \item \textbf{Message drafting and critique.} The \texttt{MessageComposerLLM} writes a short seller message from a precise turn intent and verified package summary. The \texttt{MessageCritic} reviews it for tone, concision, factual grounding, concession framing, and amenity wording before send.
+  \item \textbf{Deal Room turn.} The final \texttt{SellerTurn} includes text plus an optional structured offer. The API returns the buyer's response, quote metadata, and result state; the agent logs the turn and repeats until accept, walk, or round limit.
 \end{enumerate}
 
-\section*{Negotiation Phases}
+\section*{Specialised Agents and Responsibilities}
 \begin{center}
 \small
-\begin{tabular}{@{}ll@{}}
-\textbf{Phase} & \textbf{Action} \\
-\hline
-Qualify (R1--2) & Ask only if critical fields missing and buyer is patient \\
-Anchor & Filter by amenities; open on \emph{cheapest qualifying} package at high markup ($\sim$16--25\%) \\
-Concede & Same listing, lower \texttt{markupPct} --- buyer feels they won; cost unchanged \\
-Pivot & After sustained price pushback, switch to a cheaper base product (up to 20\% below last quote) \\
-Close & When close signal is high, hold price and land just under inferred ceiling \\
+\begin{tabular}{@{}p{3.4cm}p{10.4cm}@{}}
+\toprule
+\textbf{Agent / module} & \textbf{Responsibility} \\
+\midrule
+\texttt{SellerAgent} & Central orchestrator. Maintains state, controls round pacing, decides when to ask, search, offer, concede, pivot, add a car, stop, or log. \\
+\texttt{ProfileEvaluator} & Structured LLM agent for buyer facts and psychology. Extracts typed profile fields and reads resistance, impatience, close signal, and objection type. \\
+\texttt{McpSearchEngine} & Tool-using inventory agent. Ranks MCP servers/tools, fills tool arguments from the buyer profile, retries broadened searches, and finds car hire when needed. \\
+\texttt{CandidateScorer} & Deterministic fit evaluator. Scores listings by product match, destination, budget headroom, must-have amenities, review quality, and luxury level. \\
+\texttt{ShortlistEvaluator} & Selection agent. Chooses the most sellable candidate from scored live options while avoiding structurally unclosable high-cost bases. \\
+\texttt{PricingStrategist} & Negotiation agent. Infers ceiling, sets markup, applies concession ladder, handles endgame pricing, and resets anchors when product class changes. \\
+\texttt{MessageComposerLLM} & Seller voice agent. Converts a turn intent and verified facts into a concise, persuasive buyer-facing message. \\
+\texttt{MessageCritic} & Internal review agent. Rejects invented facts, weak concession framing, banned chatbot phrasing, and hesitant amenity language before the message is sent. \\
+\texttt{models.py} & Contract layer. Validates Deal Room payloads, structured offers, source receipts, holiday/tour/car schemas, and quote/result objects. \\
+\bottomrule
 \end{tabular}
 \end{center}
 
-\section*{Key Design Decisions}
-\begin{itemize}[leftmargin=*, nosep, topsep=2pt]
-  \item \textbf{Ceiling inference, not budget chasing} --- Rejections tighten upper bound; engagement raises lower bound; pricing targets $\sim$94\% of best estimate.
-  \item \textbf{Markup before pivot} --- Consecutive small markup cuts on the same product before re-sourcing; avoids ``sideways'' hotel swaps that trigger walks.
-  \item \textbf{Sticky candidate} --- Once quoted, the base product is locked unless a deliberate pivot or fit objection forces change.
-  \item \textbf{Amenity-aware search \& pitch} --- Must-haves (spa, beachfront, pool, AI board) filter MCP queries and are framed confidently in buyer language (e.g.\ \texttt{close\_to\_beach} $\rightarrow$ ``beachfront'').
-  \item \textbf{Close-first scoring} --- A closed deal at 5\% markup beats a walk at 25\%; the pricing agent holds firm when the buyer is nearly ready.
-  \item \textbf{Deterministic fallbacks} --- Every LLM evaluator has a rule-based fallback so MCP or model failures never stall the conversation.
+\section*{Live Inventory and Grounding}
+The agent uses real MCP data rather than invented package descriptions. The MCP layer knows the public travel servers: TravelSupermarket, trivago, Kiwi, EconomyBookings, and TourRadar. For each server it performs the JSON-RPC MCP initialise flow where required, lists tools, selects travel-relevant tools, and calls them with arguments derived from the buyer profile.
+
+Because each MCP returns different shapes, \texttt{catalog.py} contains normalisers for structured offers, text summaries, generic nested dictionaries, and TourRadar's embedded JSON text. The output is always a \texttt{ListingCandidate}. This canonical layer is important: downstream scoring, pricing, offer construction, and message grounding all work against one internal schema regardless of source.
+
+Only candidates with a real total price, real URL or deep link, and enough identifying data can become offers. The structured offer stores the original cost as \texttt{priceTotal}, applies markup separately as \texttt{markupPct}, and records source receipts. This separation ensures the buyer-facing negotiation can be persuasive while the competition API can still verify the true cost basis.
+
+\section*{Negotiation Strategy}
+The strategy is built around the scoring reality: close first, then margin, then satisfaction. That does not mean discounting early. It means choosing offers that are closable and preserving enough markup room to make concessions feel meaningful.
+
+\begin{itemize}
+  \item \textbf{Qualify only when useful.} In rounds 1--2 the agent may ask for missing critical facts. If the buyer is impatient or enough is known to search, it moves directly to a concrete offer.
+  \item \textbf{Open on a sellable base.} The first quote uses a calibrated anchor. Luxury buyers and low-resistance buyers can support higher markup; price-sensitive or impatient buyers receive a softer opening.
+  \item \textbf{Prefer cheapest qualifying quality.} A lower verified cost creates more margin headroom and more room for visible concessions. The system avoids picking the most expensive luxury item when a mid-priced option still satisfies the quality bar.
+  \item \textbf{Use sticky candidates.} Once a product has been quoted, background searches do not randomly swap it. Unexplained hotel changes reduce trust. The candidate changes only for a fit rescue or deliberate price pivot.
+  \item \textbf{Concede on total, not just percentage.} Buyers react to the total price they see. The markup ladder ensures price concessions are visible in pounds and never accidentally quote higher after pushback.
+  \item \textbf{Hold when close.} If the buyer is asking detail questions or showing acceptance signals without serious price resistance, the agent holds the price instead of donating margin.
+  \item \textbf{Pivot when markup cannot solve the problem.} If the buyer keeps objecting and markup is already low, the agent searches for a cheaper base product. A successful pivot must produce a dramatic total-price drop, not a sideways swap.
+  \item \textbf{Endgame close-first.} In the final rounds the markup cap tightens. A closed low-margin deal beats a high-margin walk-away under the challenge scoring.
 \end{itemize}
 
-\section*{Architecture (one glance)}
-\small
-Buyer message $\rightarrow$ Profile + Read $\rightarrow$ MCP Search $\rightarrow$ Score \& Pick $\rightarrow$ Price $\rightarrow$ Compose + Critic $\rightarrow$ Offer to Deal Room $\rightarrow$ repeat until accept / walk / round limit.
+\section*{Handling Buyer Psychology}
+Buyer messages are not treated as plain text commands. The agent tracks resistance, impatience, fit objections, suspicion of overcharging, and close signals. These readings alter behaviour:
+
+\begin{itemize}
+  \item Impatient buyers get offers faster and fewer qualifying questions.
+  \item Price objections increase the consecutive objection counter and trigger meaningful concessions or pivots.
+  \item Fit objections can unlock a re-search and candidate replacement.
+  \item Close signals cause the pricing ladder to hold rather than concede unnecessarily.
+  \item Overcharge accusations produce stronger total-price caps because trust is at risk.
+\end{itemize}
+
+The message layer also adapts to the buyer. The composer is instructed to sound like a sharp human travel seller rather than a generic assistant, avoid filler empathy, mirror bluntness when appropriate, stay within one to three sentences, and never mention internal markup, cost, or scoring. The critic enforces the same rules and improves weak drafts.
+
+\section*{Factual Safety and Robustness}
+The system has several protections against common agent failure modes:
+
+\begin{itemize}
+  \item \textbf{No fabricated offers.} Specific hotel, tour, car, price, and amenity claims must come from candidate summaries produced from live MCP data.
+  \item \textbf{Typed structured outputs.} LLM extraction, buyer reads, pricing advice, shortlist verdicts, and draft reviews all use Pydantic schemas.
+  \item \textbf{Deterministic fallbacks.} If an LLM call fails, the controller can still ask, search, price, compose, and continue using rule-based logic.
+  \item \textbf{Schema validation.} A \texttt{StructuredOffer} must contain exactly one primary product, non-empty source receipts, positive cost, and valid holiday/tour/car fields.
+  \item \textbf{Source receipts.} Every offer carries MCP source URLs and prices, so margin is auditable.
+  \item \textbf{Conversation death detection.} If the buyer has clearly left even though the API continues, the agent stops burning rounds.
+  \item \textbf{Amenity translation guard.} Canonical tags are translated into confident buyer language, e.g. \texttt{close\_to\_beach} is pitched as beach/on-beach language and \texttt{jacuzzi} can be framed as spa/wellness when relevant, without inventing unsupported details.
+\end{itemize}
+
+\section*{Why This Counts as Agentic}
+The approach is agentic because the system repeatedly observes, reasons, acts, receives feedback, and updates its plan under uncertainty. It uses tools to gather live external data, maintains memory across turns, decomposes the negotiation into specialised cognitive roles, and changes tactics based on buyer reactions. It is also deliberately constrained: the central controller decides when each agent may act, typed schemas restrict what the LLM can return, and deterministic code owns high-risk operations such as pricing guards and API payload construction.
+
+In short, DealBreakers is a \textbf{multi-agent negotiation controller}: LLM agents provide judgement where language and psychology matter, MCP tool use supplies real inventory, and deterministic guard rails keep the conversation factual, priced correctly, and optimised for the competition score.
 
 \vspace{4pt}
 \hrule
 \vspace{2pt}
-{\footnotesize \textit{DealBreakers} --- UCL. Built for the Listo Deal Room competition. Agent stack: Python, OpenAI GPT-4o, live travel MCP integrations.}
+{\footnotesize \textit{DealBreakers} --- UCL. Built for the Listo Deal Room competition. Stack: Python, Pydantic, OpenAI, live travel MCP integrations, Deal Room buyer API.}
 
 \end{document}
