@@ -22,7 +22,8 @@ def client() -> DealRoomClient:
     return DealRoomClient(settings)
 
 
-def test_start_match_official(client: DealRoomClient) -> None:
+def test_start_match_official(client: DealRoomClient, monkeypatch) -> None:
+    monkeypatch.setenv("ALLOW_OFFICIAL_MATCHES", "true")
     with requests_mock.Mocker() as mock:
         mock.post(
             f"{BASE_URL}/match",
@@ -34,7 +35,7 @@ def test_start_match_official(client: DealRoomClient) -> None:
             },
         )
 
-        result = client.start_match()
+        result = client.start_match(practice=False, official=True)
 
         assert isinstance(result, MatchStartResponse)
         assert result.match_id == "abc123"
@@ -67,10 +68,11 @@ def test_start_match_all_done(client: DealRoomClient) -> None:
     with requests_mock.Mocker() as mock:
         mock.post(f"{BASE_URL}/match", json={"done": True})
 
-        result = client.start_match()
+        result = client.start_match(practice=True)
 
         assert isinstance(result, AllMatchesDone)
         assert result.done is True
+        assert mock.last_request.json() == {"practice": True}
 
 
 def test_send_turn_without_offer(client: DealRoomClient) -> None:
@@ -141,7 +143,7 @@ def test_authentication_error(client: DealRoomClient) -> None:
         mock.post(f"{BASE_URL}/match", status_code=401, text="Invalid key")
 
         with pytest.raises(AuthenticationError):
-            client.start_match()
+            client.start_match(practice=True, persona_id="practice-bob")
 
 
 def test_turn_ended_accept(client: DealRoomClient) -> None:

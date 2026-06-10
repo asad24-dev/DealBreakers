@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -37,12 +38,32 @@ class DealRoomClient:
     def start_match(
         self,
         *,
-        practice: bool = False,
+        practice: bool = True,
         persona_id: str | None = None,
+        official: bool = False,
     ) -> MatchStartResponse | AllMatchesDone:
-        body: dict[str, Any] = {}
-        if practice:
-            body["practice"] = True
+        if not practice:
+            if not official:
+                raise RuntimeError(
+                    "Official matches are disabled. Set ALLOW_OFFICIAL_MATCHES=true "
+                    "and pass official=True explicitly."
+                )
+            if os.environ.get("ALLOW_OFFICIAL_MATCHES", "").lower() not in {
+                "1",
+                "true",
+                "yes",
+            }:
+                raise RuntimeError(
+                    "Official matches are disabled. Set ALLOW_OFFICIAL_MATCHES=true "
+                    "and pass official=True explicitly."
+                )
+            if persona_id is not None:
+                raise RuntimeError(
+                    "Official matches cannot target a practice persona. Omit persona_id."
+                )
+            body: dict[str, Any] = {}
+        else:
+            body = {"practice": True}
             if persona_id:
                 body["personaId"] = persona_id
 

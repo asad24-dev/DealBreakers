@@ -1,2 +1,7 @@
 requests>=2.31.0
 python-dotenv>=1.0.0
+openai>=1.40.0
+
+# Optional orchestration (Phase 8E) — project works without these installed.
+langgraph>=0.2.0; python_version >= "3.10"
+langchain-core>=0.3.0; python_version >= "3.10"
