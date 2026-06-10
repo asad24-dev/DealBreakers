@@ -15,6 +15,40 @@ from dealbreakers.profile import BuyerProfile
 
 CANONICAL_AMENITIES = list(typing.get_args(Amenity))
 
+_SELLER_VOICE_RULES = """
+VOICE: Sound like a sharp human travel agent, not an AI chatbot. Never open with filler empathy —
+banned phrases include "I completely understand", "I truly appreciate", "I appreciate your directness",
+"I appreciate your frustration", "Thank you for sharing", "Great question". Lead with the answer,
+hotel name, or price move. Match the buyer's bluntness when they are blunt.
+
+AMENITY FRAMING (canonical tags in package details — translate confidently, never hedge):
+- close_to_beach → say "on the beach" or "beachfront"; never "conveniently close", "near the beach",
+  or "short transfer"
+- jacuzzi → when the buyer wants spa/wellness, present it as proper spa facilities (wellness centre,
+  spa treatments, hydrotherapy); never call it "just a jacuzzi" or "not a spa"
+- spa → full spa with treatments
+When the buyer challenges an amenity that IS in the listed amenities, reaffirm confidently — do not
+apologise or concede the property fails their requirement. Do not invent treatment menus or exact
+distances; speak in confident resort-level terms.
+"""
+
+
+def amenity_sales_hints(amenities: list[str]) -> str:
+    """How to pitch listed amenities so wording does not kill an otherwise good deal."""
+    am = set(amenities)
+    hints: list[str] = []
+    if "close_to_beach" in am:
+        hints.append("beachfront / on the beach")
+    if "spa" in am:
+        hints.append("full spa with treatments")
+    elif "jacuzzi" in am:
+        hints.append("spa & wellness (jacuzzi/hydrotherapy - sell as proper spa)")
+    if "pool" in am:
+        hints.append("pool")
+    if "all_inclusive" in am or "AI" in am:
+        hints.append("all-inclusive")
+    return "; ".join(hints)
+
 
 # ---------------------------------------------------------------- profile agent
 
@@ -486,16 +520,12 @@ class MessageComposerLLM:
             "Rules: 1-3 sentences, mirror the buyer's tone, be warm and confident, reference their "
             "specific must-haves when relevant, never mention markup/cost/margins/percentages, never "
             "claim the trip is booked, never invent amenities or prices, no emojis unless the buyer uses them. "
+            f"{_SELLER_VOICE_RULES}"
             "CRITICAL: if package details are 'none', you must NOT describe any specific trip, hotel, tour, "
             "itinerary, city list, duration or price — doing so would be misrepresentation. In that case "
             "just respond to the buyer and ask the single question in the intent. "
-            "Never contradict or embellish the listed package details: if the buyer dislikes a listed "
-            "feature, acknowledge it honestly instead of inventing claims about exclusivity, quietness, "
-            "or anything else not in the details. "
-            "If the buyer demands specifics that are NOT in the package details (e.g. exact spa "
-            "treatments, room dimensions, menu items), NEVER fabricate them — even under pressure. "
-            "Instead, point to the strongest facts you DO have (star rating, review score, listed "
-            "amenities) and say you will confirm the specifics with the property."
+            "Only claim amenities that appear in the package details; use the AMENITY FRAMING rules, if amenity close enough to actual then you can say yes it is included instead of letting the buyer walk due to word misunderstanding "
+            "above to describe them in buyer-friendly language."
         )
         text = llm.freeform(prompt)
         return text or fallback
@@ -549,16 +579,18 @@ class MessageCritic:
             f"Verified package facts (the message must not claim anything beyond these): "
             f"{candidate_summary or 'none'}\n"
             f"DRAFT: {draft}\n\n"
+            f"{_SELLER_VOICE_RULES}"
             "Checklist: matches the buyer's tone and energy; concise (max 3 sentences); answers what "
             "the buyer actually asked; when the price dropped, frames it as a hard-won concession the "
             "buyer earned (state the saving in pounds, never mention margins or percentages); when the "
             "price did NOT drop, it must never be called a concession, discount or saving — justify "
-            "the value instead; contains a confident nudge toward accepting; adds NO unverified facts. "
-            "REJECT any draft that invents specifics absent from the verified package facts (spa "
-            "treatment lists, room features, transfers, meal details): replace fabrications with the "
-            "strongest VERIFIED facts plus an offer to confirm specifics with the property. "
-            "If the draft passes, verdict 'send'. Otherwise verdict 'revise' and write improved_text "
-            "yourself following the same rules — you may only rephrase, never add new facts."
+            "the value instead; contains a confident nudge toward accepting. "
+            "REJECT drafts that use banned AI empathy openers or hedge on listed amenities (e.g. "
+            "'conveniently close' when close_to_beach is listed, or 'jacuzzi not a spa' when jacuzzi "
+            "is listed and buyer wants spa). Revise to confident AMENITY FRAMING instead. "
+            "REJECT invented facts not in package details (exact treatment menus, room sizes, transfer "
+            "times). If the draft passes, verdict 'send'. Otherwise verdict 'revise' and write "
+            "improved_text yourself — rephrase only, no new unverified facts."
         )
         review = llm.structured(prompt, DraftReview, temperature=0.4)
         if review is not None and review.verdict == "revise" and review.improved_text.strip():

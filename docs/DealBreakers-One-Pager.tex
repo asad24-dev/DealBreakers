@@ -1,0 +1,89 @@
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[margin=1.6cm]{geometry}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{microtype}
+
+\definecolor{accent}{HTML}{1A365D}
+
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{4pt}
+\titlespacing*{\section}{0pt}{6pt}{3pt}
+\titlespacing*{\subsection}{0pt}{4pt}{2pt}
+
+\titleformat{\section}{\large\bfseries\color{accent}}{}{0em}{}
+\titleformat{\subsection}{\normalsize\bfseries\color{accent}}{}{0em}{}
+
+\begin{document}
+
+\begin{center}
+  {\LARGE\bfseries\color{accent} DealBreakers}\\[4pt]
+  {\large Listo Deal Room --- Autonomous Travel Seller Agent}\\[6pt]
+  \textbf{Team members:}
+  Muhammad Asad Majeed \textbullet{}
+  Muhammad Maaz \textbullet{}
+  Abdul Azeem Makarim \textbullet{}
+  Abdussalam Popoola
+\end{center}
+
+\vspace{4pt}
+\hrule
+\vspace{6pt}
+
+\section*{Problem}
+We compete in the \textbf{Listo Deal Room}: an AI buyer negotiates a real travel package over up to 15 rounds.
+Our agent must \emph{close the deal}, \emph{maximise margin}, and \emph{keep the buyer satisfied}.
+Scoring (100 pts): \textbf{Close} 50 (binary) \textbar{} \textbf{Margin} 30 \textbar{} \textbf{Satisfaction} 20.
+Margin is computed as $(q - c) / (B - c)$, where $q$ is quoted total, $c$ is verified MCP cost, and $B$ is the buyer's hidden budget ceiling---which we must infer from dialogue.
+
+\section*{Approach: Multi-Agent Negotiation Loop}
+Each round runs a deterministic pipeline orchestrated by a central \texttt{SellerAgent}, with specialised LLM evaluators for judgment calls:
+
+\begin{enumerate}[leftmargin=*, nosep, topsep=2pt]
+  \item \textbf{Profile extraction} --- Regex baseline plus \emph{ProfileEvaluator} LLM extracts destination, product type (holiday / tour / city break), party size, must-have amenities, luxury/price sensitivity, and budget. An \emph{echo guard} discards budget figures that mirror our own quoted prices (prevents a downward spiral).
+  \item \textbf{Buyer read} --- \emph{ProfileEvaluator} scores mood, resistance, impatience, close signal, and main objection (price vs.\ fit).
+  \item \textbf{Live inventory search} --- \emph{McpSearchEngine} queries travel MCPs (TravelSupermarket, TourRadar, trivago, Kiwi, EconomyBookings), maps results to a canonical catalogue, and scores candidates on destination fit, star rating, budget, and amenity coverage.
+  \item \textbf{Shortlist selection} --- \emph{ShortlistEvaluator} picks the best qualifying listing; preference for cheapest cost base that satisfies all hard constraints (maximises margin headroom).
+  \item \textbf{Pricing strategy} --- \emph{PricingStrategist} sets \texttt{markupPct} using a hybrid of deterministic anchors and LLM advice informed by quote/reaction history. Inferred ceiling updated each round from rejections and warm signals.
+  \item \textbf{Message generation} --- \emph{MessageComposerLLM} drafts a 1--3 sentence pitch; \emph{MessageCritic} revises before send (tone match, no fabricated facts, confident amenity framing).
+  \item \textbf{Structured offer} --- Real MCP \texttt{priceTotal} and \texttt{deepLinkUrl} attached; markup applied without altering verified cost.
+\end{enumerate}
+
+\section*{Negotiation Phases}
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\textbf{Phase} & \textbf{Action} \\
+\hline
+Qualify (R1--2) & Ask only if critical fields missing and buyer is patient \\
+Anchor & Filter by amenities; open on \emph{cheapest qualifying} package at high markup ($\sim$16--25\%) \\
+Concede & Same listing, lower \texttt{markupPct} --- buyer feels they won; cost unchanged \\
+Pivot & After sustained price pushback, switch to a cheaper base product (up to 20\% below last quote) \\
+Close & When close signal is high, hold price and land just under inferred ceiling \\
+\end{tabular}
+\end{center}
+
+\section*{Key Design Decisions}
+\begin{itemize}[leftmargin=*, nosep, topsep=2pt]
+  \item \textbf{Ceiling inference, not budget chasing} --- Rejections tighten upper bound; engagement raises lower bound; pricing targets $\sim$94\% of best estimate.
+  \item \textbf{Markup before pivot} --- Consecutive small markup cuts on the same product before re-sourcing; avoids ``sideways'' hotel swaps that trigger walks.
+  \item \textbf{Sticky candidate} --- Once quoted, the base product is locked unless a deliberate pivot or fit objection forces change.
+  \item \textbf{Amenity-aware search \& pitch} --- Must-haves (spa, beachfront, pool, AI board) filter MCP queries and are framed confidently in buyer language (e.g.\ \texttt{close\_to\_beach} $\rightarrow$ ``beachfront'').
+  \item \textbf{Close-first scoring} --- A closed deal at 5\% markup beats a walk at 25\%; the pricing agent holds firm when the buyer is nearly ready.
+  \item \textbf{Deterministic fallbacks} --- Every LLM evaluator has a rule-based fallback so MCP or model failures never stall the conversation.
+\end{itemize}
+
+\section*{Architecture (one glance)}
+\small
+Buyer message $\rightarrow$ Profile + Read $\rightarrow$ MCP Search $\rightarrow$ Score \& Pick $\rightarrow$ Price $\rightarrow$ Compose + Critic $\rightarrow$ Offer to Deal Room $\rightarrow$ repeat until accept / walk / round limit.
+
+\vspace{4pt}
+\hrule
+\vspace{2pt}
+{\footnotesize \textit{DealBreakers} --- UCL. Built for the Listo Deal Room competition. Agent stack: Python, OpenAI GPT-4o, live travel MCP integrations.}
+
+\end{document}

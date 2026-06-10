@@ -16,8 +16,8 @@ class MessageComposer:
             budget_line = f" It keeps the base package around GBP {candidate.price_total:,.0f} before my service fee."
 
         return (
-            f"I found a strong live option: {candidate.name}. It looks like a good fit because it {fit_bits}."
-            f"{budget_line} I can offer it with a {markup_pct:.0f}% service margin and the real listing attached."
+            f"{candidate.name} is a strong live option — {fit_bits}."
+            f"{budget_line} Total around GBP {candidate.price_total * (1 + markup_pct / 100):,.0f}; listing attached."
         )
 
     def no_listing_found(self, profile: BuyerProfile) -> str:
@@ -29,7 +29,8 @@ class MessageComposer:
         )
 
     def concede(self, scored: ScoredCandidate, markup_pct: float) -> str:
+        total = scored.candidate.price_total * (1 + markup_pct / 100)
         return (
-            f"I hear you on price. I can sharpen this to a {markup_pct:.0f}% margin on "
-            f"{scored.candidate.name}; that keeps the same real listing but gives you a better total."
+            f"Same {scored.candidate.name}, better number: GBP {total:,.0f}. "
+            "That's me stretching on my side — worth locking in."
         )

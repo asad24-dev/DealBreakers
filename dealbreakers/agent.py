@@ -18,6 +18,7 @@ from dealbreakers.evaluators import (
     PricingStrategist,
     ProfileEvaluator,
     ShortlistEvaluator,
+    amenity_sales_hints,
     merge_extraction,
 )
 from dealbreakers.models import BuyerAction, MatchStart, Quote, SellerTurn
@@ -72,7 +73,8 @@ class SellerAgent:
         buyer_messages = [match.buyer.text]
         seller_messages: list[str] = []
         self._log_path = self._log_dir / (
-            f"{time.strftime('%Y%m%d-%H%M%S')}-{match.scenario.name.replace(' ', '_')}.json"
+            f"{time.strftime('%Y%m%d-%H%M%S')}-{match.match_id[:8]}-"
+            f"{match.scenario.name.replace(' ', '_')}.json"
         )
 
         self._console.rule(f"{match.scenario.name}")
@@ -412,6 +414,8 @@ class SellerAgent:
             f"stars={candidate.star_rating or '?'}, review={candidate.rating or '?'}, "
             f"board={candidate.board_basis or '?'}, amenities: {', '.join(candidate.amenities[:10])}"
         )
+        if pitch := amenity_sales_hints(candidate.amenities):
+            summary += f"; pitch confidently as: {pitch}"
         if state.car:
             summary += (
                 f"; includes car hire: {state.car.name} ({state.car.raw.get('categoryName', '')}, "
