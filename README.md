@@ -74,5 +74,5 @@ The seller is deliberately a deterministic controller with internal evaluator ag
 
 The result is an agentic negotiation controller: it observes the buyer, reasons through specialised agents, uses MCP tools to gather live inventory, acts through a structured Deal Room turn, receives feedback, and updates its state. It is also intentionally grounded. Real listings, verified prices, source receipts, and API payloads stay outside the free-form LLM path.
 
-For a fuller write-up of the agentic approach, including the TikZ architecture diagram, see `docs/DealBreakers-One-Pager.tex`.
+For full architecture and negotiation flow detail, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/NEGOTIATION-FLOW.md](docs/NEGOTIATION-FLOW.md). For a fuller write-up of the agentic approach, including the TikZ architecture diagram, see `docs/DealBreakers-One-Pager.tex`.
 
