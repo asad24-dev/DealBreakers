@@ -5,6 +5,15 @@ from typing import Any
 import httpx
 
 
+class DealRoomRejection(Exception):
+    """A 4xx from the Deal Room (e.g. unreadable offer). No round is consumed."""
+
+    def __init__(self, status_code: int, body: str):
+        super().__init__(f"{status_code}: {body}")
+        self.status_code = status_code
+        self.body = body
+
+
 class DealRoomClient:
     def __init__(self, base_url: str, team_key: str, timeout: float = 30):
         self.base_url = base_url.rstrip("/")
@@ -32,6 +41,8 @@ class DealRoomClient:
         if offer:
             body["offer"] = offer
         response = self.client.post(f"{self.base_url}/match/{match_id}/turn", json=body)
+        if 400 <= response.status_code < 500:
+            raise DealRoomRejection(response.status_code, response.text[:2000])
         response.raise_for_status()
         return response.json()
 

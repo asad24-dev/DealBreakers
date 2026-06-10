@@ -1714,3 +1714,53 @@ Practice mode is triggered by sending:
 ```
 
 Official mode is triggered by calling `/match` without `"practice": true`, so avoid that until you’re ready.
+
+---
+
+_**User (2026-06-10 11:08:00Z)**_
+
+what are the personas, like where is it written, is it random names?
+
+
+---
+
+_**Agent (gpt-5.5 2026-06-10 11:08:19Z)**_
+
+They’re written in the challenge text under **Step 4. Practice first**.
+
+The five practice persona IDs are:
+
+```text
+practice-bob
+practice-toni
+practice-elon
+practice-gordon
+practice-cris
+```
+
+They are not random names. They’re fixed IDs you can pass to the practice `/match` endpoint:
+
+```json
+{
+  "practice": true,
+  "personaId": "practice-bob"
+}
+```
+
+The text describes them like this:
+
+```text
+practice-bob    easy — beach holiday
+practice-toni   medium — guided tour of Spain
+practice-elon   medium — tech city-break in a European capital
+practice-gordon hard — 5-star perfectionist
+practice-cris   hard — smug luxury, wants a premium car
+```
+
+If you omit `personaId` and just send:
+
+```json
+{ "practice": true }
+```
+
+then the server rotates through the practice buyers.
