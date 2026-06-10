@@ -58,7 +58,7 @@ The codebase is a single Python package (`dealbreakers/`) with a deterministic o
 
 ### The Deal Room challenge
 
-[Listo](https://listo.com) provides the orchestration layer for MCP-driven commerce. Teams built **seller agents** that negotiate against Listo's **buyer agents** over live travel MCPs, part of the **Antler × Google × Listo** hackathon.
+[Listo](https://listoai.co) provides the orchestration layer for MCP-driven commerce. Teams built **seller agents** that negotiate against Listo's **buyer agents** over live travel MCPs, part of the **Antler × Google × Listo** hackathon.
 
 In each match:
 
