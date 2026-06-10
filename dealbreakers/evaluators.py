@@ -90,7 +90,9 @@ class ProfileEvaluator:
             f"{transcript}\n\n"
             "Extract ONLY what the buyer actually said or strongly implied. Do not guess "
             "budgets or destinations that were never mentioned. budget_total is for the whole "
-            "party in GBP. product_preference is 'tour' only if they want a guided multi-day "
+            "party in GBP and must come from the BUYER stating their own limit — NEVER treat a "
+            "price the seller quoted (or the buyer merely repeated back) as the buyer's budget. "
+            "product_preference is 'tour' only if they want a guided multi-day "
             "tour; 'city_break' for city trips; 'holiday' for beach/resort/lakes hotel stays."
         )
         return llm.structured(prompt, ProfileExtraction)
@@ -164,6 +166,31 @@ class ShortlistEvaluator:
             return None
         if len(shortlist) == 1:
             return 0
+
+        # Value guard: with no stated budget, an expensive base is the #1 walk risk —
+        # the buyer's hidden ceiling can sit below our cost, making the deal structurally
+        # unclosable. Even luxury buyers walk on the priciest 5-star: pick a mid-priced
+        # base within the right QUALITY tier, then let the anchor markup do the earning.
+        index_map = list(range(len(shortlist)))
+        if profile.budget is None:
+            pool = list(enumerate(shortlist))
+            if profile.luxury_weight >= 0.5:
+                quality = [
+                    (i, s)
+                    for i, s in pool
+                    if (s.candidate.star_rating or 0) >= 5 or (s.candidate.rating or 0) >= 9
+                ]
+                if quality:
+                    pool = quality
+            prices = sorted(s.candidate.price_total for _, s in pool)
+            median = prices[len(prices) // 2]
+            cutoff = median * (1.0 if profile.price_sensitivity >= 0.3 else 1.15)
+            value_picks = [(i, s) for i, s in pool if s.candidate.price_total <= cutoff]
+            if value_picks:
+                index_map = [i for i, _ in value_picks]
+                shortlist = [s for _, s in value_picks]
+                if len(shortlist) == 1:
+                    return index_map[0]
         lines = []
         for i, scored in enumerate(shortlist):
             c = scored.candidate
@@ -189,8 +216,8 @@ class ShortlistEvaluator:
         )
         verdict = llm.structured(prompt, ShortlistVerdict)
         if verdict is None or not (0 <= verdict.best_index < len(shortlist)):
-            return None
-        return verdict.best_index
+            return index_map[0] if index_map else None
+        return index_map[verdict.best_index]
 
 
 # ---------------------------------------------------------------- pricing agent
@@ -200,7 +227,7 @@ class PricingAdvice(BaseModel):
     estimated_ceiling_total: float | None = Field(
         default=None, description="Best estimate of the max total GBP the buyer will accept"
     )
-    recommended_markup_pct: float = Field(ge=0, le=30)
+    recommended_markup_pct: float = Field(ge=0, le=40)
     rationale: str = ""
 
 
@@ -221,6 +248,7 @@ class MarkupLadder:
     percentage when we pivot to a cheaper base package."""
 
     last_total: float | None = None
+    concessions: int = 0
 
     def clamp(
         self,
@@ -234,16 +262,42 @@ class MarkupLadder:
         pivots_available: bool = False,
     ) -> float:
         total = cost * (1 + advised / 100.0)
+        remaining_now = max_rounds - round_number
 
         if self.last_total is not None:
             # Never quote higher than we already did: it destroys trust.
             cap = self.last_total
-            if read is not None:
-                if read.feels_overcharged:
-                    cap = self.last_total * 0.85
-                elif read.main_objection == "price" or read.resistance >= 0.6:
-                    cap = self.last_total * 0.92
+            price_pushback = read is not None and (
+                read.feels_overcharged or read.main_objection == "price" or read.resistance >= 0.6
+            )
+            if read is not None and read.feels_overcharged:
+                cap = self.last_total * 0.85
+            elif price_pushback:
+                cap = self.last_total * 0.92
             total = min(total, cap)
+
+            # HOLD price when the buyer sounds nearly ready and isn't pushing on price —
+            # conceding then just donates margin to salami tactics.
+            buyer_warming = read is not None and read.close_signal >= 0.6 and not price_pushback
+            # After 3 concessions on this base, stop drip-feeding discounts; a pivot or
+            # a confident final-price stance reads as more serious anyway.
+            salami_stop = (
+                self.concessions >= 3
+                and remaining_now > 3
+                and not (read is not None and read.feels_overcharged)
+            )
+            if buyer_warming or salami_stop:
+                total = self.last_total
+            elif read is not None and not read.feels_overcharged and read.resistance < 0.6:
+                # Mild pushback earns a visible but bounded step (max ~10% off the last total).
+                total = max(total, min(self.last_total * 0.90, cap))
+            elif read is not None and not read.feels_overcharged:
+                # Hard pushback: concede decisively but never more than ~15% in one step —
+                # a base-product pivot is the tool for bigger drops, not margin donation.
+                total = max(total, min(self.last_total * 0.85, cap))
+
+            if total < self.last_total - 1:
+                self.concessions += 1
 
         # Once the buyer objects on price and we know their budget, land inside it.
         if budget and read is not None and (read.main_objection == "price" or read.feels_overcharged):
@@ -268,7 +322,7 @@ class MarkupLadder:
         if remaining <= 1:
             markup = min(markup, 3.0)
 
-        markup = max(2.0, min(25.0, markup))
+        markup = max(2.0, min(35.0, markup))
         self.last_total = cost * (1 + markup / 100.0)
         return markup
 
@@ -276,6 +330,34 @@ class MarkupLadder:
 class PricingStrategist:
     def __init__(self) -> None:
         self.ladder = MarkupLadder()
+
+    def reset_ladder(self) -> None:
+        """When the base product CLASS changes (e.g. hotel -> guided tour), old quote
+        totals are meaningless as anchors; start a fresh ladder."""
+        self.ladder = MarkupLadder()
+
+    def anchor_for(self, profile: BuyerProfile, read: BuyerRead | None, *, cost: float) -> float:
+        """Opening anchor, calibrated per buyer. Easy buyers (low resistance, no stated
+        budget pressure) get pushed hard; a high anchor also buys concession room that
+        makes later 'wins' feel real to tougher buyers."""
+        anchor = 28.0
+        if profile.luxury_weight >= 0.5:
+            anchor += 6.0
+        if read is not None:
+            if read.resistance <= 0.2 and not read.feels_overcharged:
+                anchor += 3.0
+            if read.impatience >= 0.55:
+                anchor -= 4.0  # impatient buyers punish a haggle cycle
+        if profile.price_sensitivity >= 0.5:
+            anchor -= 8.0
+        # A stated budget is a gift: open just under it instead of guessing.
+        if profile.budget and cost > 0:
+            budget_markup = (profile.budget * 0.97 / cost - 1.0) * 100.0
+            if budget_markup > 0:
+                anchor = min(anchor, budget_markup)
+            else:
+                anchor = 12.0  # cost already near/above budget; stay modest
+        return max(12.0, min(35.0, anchor))
 
     def decide(
         self,
@@ -287,7 +369,38 @@ class PricingStrategist:
         max_rounds: int,
         quote_history: str,
         pivots_available: bool = False,
+        pivoted_this_turn: bool = False,
     ) -> PricingDecision:
+        if pivoted_this_turn and self.ladder.last_total is not None:
+            # A pivot only works if the drop is unmistakably dramatic; a "sideways move"
+            # to a similar total reads as evasion and triggers walks. Cap the new total
+            # at 80% of the last quote while keeping a real margin on the cheaper base.
+            ceiling_total = self.ladder.last_total * 0.80
+            markup = (ceiling_total / cost - 1.0) * 100.0 if cost > 0 else 10.0
+            markup = max(4.0, min(35.0, markup))
+            self.ladder.last_total = cost * (1 + markup / 100.0)
+            self.ladder.concessions += 1
+            return PricingDecision(
+                markup_pct=markup,
+                rationale="pivot: dramatic drop vs last quote",
+                ceiling_estimate=profile.budget,
+            )
+        if self.ladder.last_total is None:
+            # First quote: deterministic anchor — measurable and tunable across practice runs.
+            advised = self.anchor_for(profile, read, cost=cost)
+            rationale = f"opening anchor {advised:.0f}%"
+            ceiling = profile.budget
+            markup = self.ladder.clamp(
+                advised,
+                round_number=round_number,
+                max_rounds=max_rounds,
+                read=read,
+                cost=cost,
+                budget=profile.budget,
+                pivots_available=pivots_available,
+            )
+            return PricingDecision(markup_pct=markup, rationale=rationale, ceiling_estimate=ceiling)
+
         advice = llm.structured(self._prompt(profile, read, cost, round_number, quote_history), PricingAdvice)
         if advice is not None:
             advised = advice.recommended_markup_pct
@@ -329,10 +442,14 @@ class PricingStrategist:
             f"Our real cost: GBP {cost:.0f}. Buyer budget: {profile.budget or 'unknown'} GBP total. "
             f"Buyer price sensitivity: {profile.price_sensitivity:.1f}, luxury: {profile.luxury_weight:.1f}.\n"
             f"Buyer read: {read_text}\n"
-            f"Round {round_number} of 15. Quote history: {quote_history or 'none yet'}\n"
-            "Recommend a markup percent (0-30). Anchor high early when resistance is low; concede "
-            "decisively when the buyer pushes back; keep the final total within their ceiling. "
-            "Buyers get angry when the total is far above their budget and may accuse us of robbery."
+            f"Round {round_number} of 15. Quote/reaction history (use it to probe their hidden ceiling): "
+            f"{quote_history or 'none yet'}\n"
+            "Recommend a markup percent (0-40). Tactics: infer the buyer's ceiling from how they reacted "
+            "to each total — mild grumbling means you are close, outrage means far over. HOLD the price "
+            "when the buyer sounds nearly ready to accept (high close signal, questions about details "
+            "rather than price); conceding then just donates margin. Concede decisively only on real "
+            "price pushback. Keep the final total within their ceiling: buyers get angry when the total "
+            "is far above their budget and may accuse us of robbery."
         )
 
     def _fallback_markup(self, profile: BuyerProfile, round_number: int) -> float:
@@ -374,7 +491,76 @@ class MessageComposerLLM:
             "just respond to the buyer and ask the single question in the intent. "
             "Never contradict or embellish the listed package details: if the buyer dislikes a listed "
             "feature, acknowledge it honestly instead of inventing claims about exclusivity, quietness, "
-            "or anything else not in the details."
+            "or anything else not in the details. "
+            "If the buyer demands specifics that are NOT in the package details (e.g. exact spa "
+            "treatments, room dimensions, menu items), NEVER fabricate them — even under pressure. "
+            "Instead, point to the strongest facts you DO have (star rating, review score, listed "
+            "amenities) and say you will confirm the specifics with the property."
         )
         text = llm.freeform(prompt)
         return text or fallback
+
+
+# ---------------------------------------------------------------- critic agent
+
+
+class DraftReview(BaseModel):
+    verdict: str = Field(description="'send' if the draft is strong, 'revise' otherwise")
+    improved_text: str = Field(
+        default="", description="A better version of the message when verdict is 'revise'"
+    )
+    reason: str = ""
+
+
+class MessageCritic:
+    """Final internal gate before a message reaches the buyer. Rounds are scarce;
+    deliberation time is free — so every outbound message gets a second opinion."""
+
+    def review(
+        self,
+        *,
+        draft: str,
+        intent: str,
+        read: BuyerRead | None,
+        candidate_summary: str,
+        last_buyer_message: str,
+        quoted_total: float | None,
+        previous_total: float | None,
+    ) -> str:
+        read_text = (
+            f"mood={read.mood}, tone={read.tone}, resistance={read.resistance:.1f}, "
+            f"impatience={read.impatience:.1f}, close_signal={read.close_signal:.1f}"
+            if read
+            else "unknown"
+        )
+        price_note = "no offer attached"
+        if quoted_total is not None:
+            price_note = f"this turn quotes total GBP {quoted_total:.0f}"
+            if previous_total is not None:
+                price_note += f" (previous quote was GBP {previous_total:.0f})"
+        prompt = (
+            "You are a tough negotiation coach reviewing a seller's draft message before it is sent. "
+            "Goals in priority order: (1) the deal must close, (2) capture maximum margin, "
+            "(3) the buyer must feel they won and leave happy.\n"
+            f"Buyer's last message: {last_buyer_message}\n"
+            f"Buyer read: {read_text}\n"
+            f"Turn intent: {intent}\n"
+            f"Pricing context: {price_note}\n"
+            f"Verified package facts (the message must not claim anything beyond these): "
+            f"{candidate_summary or 'none'}\n"
+            f"DRAFT: {draft}\n\n"
+            "Checklist: matches the buyer's tone and energy; concise (max 3 sentences); answers what "
+            "the buyer actually asked; when the price dropped, frames it as a hard-won concession the "
+            "buyer earned (state the saving in pounds, never mention margins or percentages); when the "
+            "price did NOT drop, it must never be called a concession, discount or saving — justify "
+            "the value instead; contains a confident nudge toward accepting; adds NO unverified facts. "
+            "REJECT any draft that invents specifics absent from the verified package facts (spa "
+            "treatment lists, room features, transfers, meal details): replace fabrications with the "
+            "strongest VERIFIED facts plus an offer to confirm specifics with the property. "
+            "If the draft passes, verdict 'send'. Otherwise verdict 'revise' and write improved_text "
+            "yourself following the same rules — you may only rephrase, never add new facts."
+        )
+        review = llm.structured(prompt, DraftReview, temperature=0.4)
+        if review is not None and review.verdict == "revise" and review.improved_text.strip():
+            return review.improved_text.strip()
+        return draft

@@ -31,7 +31,19 @@ class McpSearchEngine:
 
     def _collect(self, profile: BuyerProfile, *, minimal: bool) -> list[ListingCandidate]:
         candidates: list[ListingCandidate] = []
+
+        # A committed tour buyer will never accept a hotel, so exhaust the tour source
+        # (including a broadened retry) before falling back to accommodation MCPs.
+        if profile.product_preference == "tour":
+            tours = self._search_generic("tourradar", profile, minimal=minimal)
+            if not tours and not minimal:
+                tours = self._search_generic("tourradar", profile, minimal=True)
+            if tours:
+                return tours
+
         for server in self._rank_servers(profile):
+            if server == "tourradar" and profile.product_preference == "tour":
+                continue  # already tried above
             if server == "trivago":
                 candidates.extend(self._search_trivago(profile))
             else:
@@ -101,11 +113,19 @@ class McpSearchEngine:
 
         if "premium" in profile.car_preference or "luxury" in profile.car_preference:
             # Prefer genuinely premium categories; cheapest within the tier avoids a
-            # price shock that blows up the package total.
+            # price shock that blows up the package total. Within the tier, image matters:
+            # a manual pickup truck categorised as "Luxury" reads as an insult to a
+            # status-driven buyer, so elegance beats a small price saving.
+            def elegance(c: dict) -> tuple[int, int, float]:
+                name = str(c.get("vehicleName", "")).lower()
+                is_truck = any(w in name for w in ("f150", "f-150", "pickup", "hilux", "ranger"))
+                is_manual = str(c.get("transmission", "")).lower().startswith("man")
+                return (int(is_truck), int(is_manual), float(c["totalPrice"]))
+
             for tier in ({"premium", "luxury"}, {"fullsize", "suv"}):
                 tier_cars = [c for c in cars if str(c.get("categoryName", "")).lower() in tier]
                 if tier_cars:
-                    chosen = min(tier_cars, key=lambda c: float(c["totalPrice"]))
+                    chosen = min(tier_cars, key=elegance)
                     break
             else:
                 chosen = max(cars, key=lambda c: float(c["totalPrice"]))
